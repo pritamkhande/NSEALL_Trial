@@ -31,10 +31,6 @@ TRADES_CSV_DIR = "data"
 os.makedirs("docs", exist_ok=True)
 os.makedirs(TRADES_CSV_DIR, exist_ok=True)
 
-# ==========================
-# UTILITIES
-# ==========================
-
 def iter_eod_files(root_dir):
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for f in filenames:
@@ -87,20 +83,13 @@ def calc_forward_point_profits(df, entry_idx, entry_price, position, max_horizon
 def calc_tminus1_profit(df, signal_idx, position):
     if signal_idx is None:
         return np.nan
-    n = len(df)
-    if signal_idx + 1 >= n:
+    if signal_idx + 1 >= len(df):
         return np.nan
 
     sign = 1 if position == "long" else -1
     c0 = df.loc[signal_idx, CLOSE_COL]
     c1 = df.loc[signal_idx + 1, CLOSE_COL]
     return sign * (c1 - c0)
-
-
-# ==========================
-# FINAL BACKTEST (CORRECTED)
-# ==========================
-
 def backtest_symbol(df: pd.DataFrame):
 
     trades = []
@@ -117,7 +106,6 @@ def backtest_symbol(df: pd.DataFrame):
 
             if sq_idx is not None and sq_idx < n - 2:
 
-                # ORIGINAL BREAKOUT RULE (next-day close confirms)
                 if df.loc[sq_idx + 1, CLOSE_COL] < df.loc[sq_idx, LOW_COL]:
 
                     signal_idx = sq_idx + 1
@@ -141,8 +129,6 @@ def backtest_symbol(df: pd.DataFrame):
                         "signal_date": df.loc[signal_idx, DATE_COL],
                         "entry_date": df.loc[entry_idx, DATE_COL],
                         "exit_date": df.loc[exit_idx, DATE_COL],
-                        "entry_index": entry_idx,
-                        "exit_index": exit_idx,
                         "position": "short",
                         "entry_price": entry_price,
                         "exit_price": exit_price,
@@ -150,17 +136,10 @@ def backtest_symbol(df: pd.DataFrame):
                         "final_stop_price": float(initial_stop),
                         "R": float(R),
                         "pnl": float(pnl),
-                        "exit_reason": "T+1_close",
                         "square_type": sq_type,
-                        "pts_Tm1": pts_Tm1,
-                        "pts_T": pts[0],
-                        "pts_T1": pts[1],
-                        "pts_T2": pts[2],
-                        "pts_T3": pts[3],
-                        "pts_T4": pts[4],
                     })
 
-                    i = exit_idx  # SKIP FORWARD (critical)
+                    i = exit_idx
                     continue
 
         # ============ LONG ==============
@@ -195,8 +174,6 @@ def backtest_symbol(df: pd.DataFrame):
                         "signal_date": df.loc[signal_idx, DATE_COL],
                         "entry_date": df.loc[entry_idx, DATE_COL],
                         "exit_date": df.loc[exit_idx, DATE_COL],
-                        "entry_index": entry_idx,
-                        "exit_index": exit_idx,
                         "position": "long",
                         "entry_price": entry_price,
                         "exit_price": exit_price,
@@ -204,22 +181,16 @@ def backtest_symbol(df: pd.DataFrame):
                         "final_stop_price": float(initial_stop),
                         "R": float(R),
                         "pnl": float(pnl),
-                        "exit_reason": "T+1_close",
                         "square_type": sq_type,
-                        "pts_Tm1": pts_Tm1,
-                        "pts_T": pts[0],
-                        "pts_T1": pts[1],
-                        "pts_T2": pts[2],
-                        "pts_T3": pts[3],
-                        "pts_T4": pts[4],
                     })
 
                     i = exit_idx
                     continue
 
-    # ================= EQUITY =================
+    # ===== Build DF =====
     trades_df = pd.DataFrame(trades)
 
+    # ===== Equity =====
     df["equity"] = np.nan
     equity = 1.0
     for t in trades:
@@ -227,8 +198,6 @@ def backtest_symbol(df: pd.DataFrame):
         df.loc[df[DATE_COL] >= t["exit_date"], "equity"] = equity
 
     return trades_df, df
-
-
 # ==========================
 # METRICS + COMMENTARY
 # ==========================
@@ -258,6 +227,7 @@ def compute_metrics(trades_df, price_df):
     start_date = price_df[DATE_COL].iloc[0]
     end_date = price_df[DATE_COL].iloc[-1]
     years = (end_date - start_date).days / 365.25
+
     if years > 0 and start_eq > 0:
         cagr = (end_eq / start_eq) ** (1 / years) - 1
     else:
@@ -278,22 +248,20 @@ def compute_metrics(trades_df, price_df):
         "end_date": end_date,
         "years": years,
     }
-
-
 # ==========================
 # HTML RENDERING
 # ==========================
 
-def render_stock_html(symbol, metrics, trades_df, commentary):
+def render_stock_html(symbol, metrics, trades_df, commentary=""):
     start = metrics["start_date"].strftime("%d-%m-%Y") if metrics["start_date"] else "N/A"
     end = metrics["end_date"].strftime("%d-%m-%Y") if metrics["end_date"] else "N/A"
     yrs = f"{metrics['years']:.1f}" if metrics["years"] else "N/A"
 
-    html = f\"\"\"<!DOCTYPE html>
+    html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>{symbol} – Gann Squaring</title>
+<title>{symbol} – Gann T+1 Close System</title>
 <style>
 body {{
   font-family: Arial, sans-serif;
@@ -326,7 +294,7 @@ th {{
 </head>
 <body>
 
-<h1>{symbol} – Gann Squaring Backtest</h1>
+<h1>{symbol} – Gann T+1 Close System</h1>
 
 <div class="card">
 <h2>Summary</h2>
@@ -339,19 +307,19 @@ th {{
 </div>
 
 <div class="card">
-<h2>All Trades</h2>
+<h2>Trades</h2>
 <table>
 <tr>
 <th>#</th>
 <th>Square</th>
 <th>Signal</th>
-<th>Entry</th>
-<th>Exit</th>
+<th>Entry (Close)</th>
+<th>Exit (T+1 Close)</th>
 <th>Side</th>
 <th>R</th>
-<th>Sq-Type</th>
+<th>SqType</th>
 </tr>
-\"\"\"
+"""
 
     for _, tr in trades_df.iterrows():
 
@@ -376,8 +344,6 @@ th {{
 </html>
 """
     return html
-
-
 def render_master_index(summaries):
     rows = ""
     for s in summaries:
@@ -398,11 +364,11 @@ def render_master_index(summaries):
 <html>
 <head>
 <meta charset="UTF-8">
-<title>NSE Stocks – Gann System</title>
+<title>NSE Gann T+1 System</title>
 <style>
 body {{
   font-family: Arial, sans-serif;
-  max-width: 900px;
+  max-width: 1000px;
   margin: auto;
   padding: 20px;
   background: #fafafa;
@@ -418,7 +384,7 @@ table {{
   width: 100%;
   border-collapse: collapse;
   margin-top: 10px;
-  font-size: 13px;
+  font-size: 14px;
 }}
 th, td {{
   padding: 6px 8px;
@@ -431,7 +397,7 @@ th {{
 </head>
 <body>
 
-<h1>NSE Stocks – Gann Squaring Backtests</h1>
+<h1>NSE Stocks – Gann T+1 Close Backtests</h1>
 
 <div class="card">
 <table>
@@ -451,8 +417,6 @@ th {{
 </body>
 </html>
 """
-
-
 # ==========================
 # MAIN
 # ==========================
@@ -483,16 +447,19 @@ def main():
 
         trades_df, price_df = backtest_symbol(df)
 
+        # save CSV
         out_csv = os.path.join(TRADES_CSV_DIR, f"{symbol}_trades.csv")
         trades_df.to_csv(out_csv, index=False)
 
+        # metrics
         metrics = compute_metrics(trades_df, price_df)
 
+        # HTML page
         sym_dir = os.path.join("docs", "stocks", symbol)
         os.makedirs(sym_dir, exist_ok=True)
 
         out_html = os.path.join(sym_dir, "index.html")
-        html = render_stock_html(symbol, metrics, trades_df, "")
+        html = render_stock_html(symbol, metrics, trades_df)
         with open(out_html, "w", encoding="utf-8") as f:
             f.write(html)
 
@@ -507,6 +474,7 @@ def main():
             "link": f"stocks/{symbol}/index.html",
         })
 
+    # master index
     master = render_master_index(summaries)
     with open(MASTER_INDEX_HTML, "w", encoding="utf-8") as f:
         f.write(master)
@@ -516,3 +484,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
