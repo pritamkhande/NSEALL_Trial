@@ -4,15 +4,14 @@ import pandas as pd
 from datetime import datetime
 
 from utils_swing import detect_swings
-from utils_gann import find_square_from_swing_low, find_square_from_swing_high
+from utils_gann import (
+    find_square_from_swing_low,
+    find_square_from_swing_high
+)
 
-# ==========================
-# CONFIG
-# ==========================
+# ---------------- CONFIG ----------------
 
-EOD_DIR = "EOD"
-EARLY_DIR = "Early_Data"
-
+EOD_DIR = "EOD"          # your EOD folder
 DATE_COL = "Date"
 OPEN_COL = "Open"
 HIGH_COL = "High"
@@ -21,15 +20,17 @@ CLOSE_COL = "Close"
 VOL_COL = "Volume"
 
 ATR_PERIOD = 14
-RISK_PER_TRADE = 0.02
 SLOPE_TOL = 0.25
 MAX_LOOKAHEAD = 160
 
+OUT_DIR = "data"         # outputs CSV here
 MASTER_INDEX_HTML = "docs/index.html"
-TRADES_CSV_DIR = "data"
 
 os.makedirs("docs", exist_ok=True)
-os.makedirs(TRADES_CSV_DIR, exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
+
+
+# ---------------- UTILITIES ----------------
 
 def iter_eod_files(root_dir):
     for dirpath, dirnames, filenames in os.walk(root_dir):
@@ -65,203 +66,80 @@ def compute_atr(df, period=ATR_PERIOD):
     return df
 
 
-def calc_forward_point_profits(df, entry_idx, entry_price, position, max_horizon=4):
-    sign = 1 if position == "long" else -1
-    out = []
+# ---------------- CORE: EXTRACT SQUARES ONLY ----------------
+
+def extract_squares(df: pd.DataFrame) -> pd.DataFrame:
+    results = []
     n = len(df)
 
-    for k in range(max_horizon + 1):
-        idx = entry_idx + k
-        if idx >= n:
-            out.append(np.nan)
-        else:
-            close_k = df.loc[idx, CLOSE_COL]
-            out.append(sign * (close_k - entry_price))
-    return out
+    for i in range(n):
 
-
-def calc_tminus1_profit(df, signal_idx, position):
-    if signal_idx is None:
-        return np.nan
-    if signal_idx + 1 >= len(df):
-        return np.nan
-
-    sign = 1 if position == "long" else -1
-    c0 = df.loc[signal_idx, CLOSE_COL]
-    c1 = df.loc[signal_idx + 1, CLOSE_COL]
-    return sign * (c1 - c0)
-def backtest_symbol(df: pd.DataFrame):
-
-    trades = []
-    n = len(df)
-
-    for i in range(n - 2):
-
-        # ============ SHORT ==============
+        # Swing Low → Upward Gann Square
         if df.loc[i, "swing_low"]:
             sq_idx, sq_type = find_square_from_swing_low(
-                df, i, DATE_COL, CLOSE_COL,
-                slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
+                df,
+                swing_idx=i,
+                date_col=DATE_COL,
+                close_col=CLOSE_COL,
+                slope_tol=SLOPE_TOL,
+                max_lookahead=MAX_LOOKAHEAD
             )
+            if sq_idx is not None and 0 <= sq_idx < n:
+                results.append({
+                    "square_date": df.loc[sq_idx, DATE_COL],
+                    "square_price": float(df.loc[sq_idx, CLOSE_COL]),
+                    "direction": "up",
+                    "square_type": sq_type
+                })
 
-            if sq_idx is not None and sq_idx < n - 2:
-
-                if df.loc[sq_idx + 1, CLOSE_COL] < df.loc[sq_idx, LOW_COL]:
-
-                    signal_idx = sq_idx + 1
-                    entry_idx = signal_idx
-                    exit_idx = signal_idx + 1
-
-                    entry_price = float(df.loc[entry_idx, CLOSE_COL])
-                    exit_price = float(df.loc[exit_idx, CLOSE_COL])
-
-                    initial_stop = df.loc[sq_idx, HIGH_COL] + 2 * df.loc[sq_idx, "ATR"]
-                    risk = initial_stop - entry_price
-                    pnl = entry_price - exit_price
-                    R = pnl / risk if risk != 0 else 0.0
-
-                    pts_Tm1 = calc_tminus1_profit(df, signal_idx, "short")
-                    pts = calc_forward_point_profits(df, entry_idx, entry_price, "short")
-
-                    trades.append({
-                        "trade_no": len(trades) + 1,
-                        "square_date": df.loc[sq_idx, DATE_COL],
-                        "signal_date": df.loc[signal_idx, DATE_COL],
-                        "entry_date": df.loc[entry_idx, DATE_COL],
-                        "exit_date": df.loc[exit_idx, DATE_COL],
-                        "position": "short",
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "initial_stop_price": float(initial_stop),
-                        "final_stop_price": float(initial_stop),
-                        "R": float(R),
-                        "pnl": float(pnl),
-                        "square_type": sq_type,
-                    })
-
-                    i = exit_idx
-                    continue
-
-        # ============ LONG ==============
+        # Swing High → Downward Gann Square
         if df.loc[i, "swing_high"]:
             sq_idx, sq_type = find_square_from_swing_high(
-                df, i, DATE_COL, CLOSE_COL,
-                slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
+                df,
+                swing_idx=i,
+                date_col=DATE_COL,
+                close_col=CLOSE_COL,
+                slope_tol=SLOPE_TOL,
+                max_lookahead=MAX_LOOKAHEAD
             )
+            if sq_idx is not None and 0 <= sq_idx < n:
+                results.append({
+                    "square_date": df.loc[sq_idx, DATE_COL],
+                    "square_price": float(df.loc[sq_idx, CLOSE_COL]),
+                    "direction": "down",
+                    "square_type": sq_type
+                })
 
-            if sq_idx is not None and sq_idx < n - 2:
+    if not results:
+        return pd.DataFrame(columns=[
+            "square_date", "square_price", "direction", "square_type"
+        ])
 
-                if df.loc[sq_idx + 1, CLOSE_COL] > df.loc[sq_idx, HIGH_COL]:
+    out_df = pd.DataFrame(results)
+    out_df = out_df.sort_values("square_date").reset_index(drop=True)
+    return out_df
 
-                    signal_idx = sq_idx + 1
-                    entry_idx = signal_idx
-                    exit_idx = signal_idx + 1
 
-                    entry_price = float(df.loc[entry_idx, CLOSE_COL])
-                    exit_price = float(df.loc[exit_idx, CLOSE_COL])
+# ---------------- HTML FOR EACH STOCK ----------------
 
-                    initial_stop = df.loc[sq_idx, LOW_COL] - 2 * df.loc[sq_idx, "ATR"]
-                    risk = entry_price - initial_stop
-                    pnl = exit_price - entry_price
-                    R = pnl / risk if risk != 0 else 0.0
+def render_stock_html(symbol, squares_df):
 
-                    pts_Tm1 = calc_tminus1_profit(df, signal_idx, "long")
-                    pts = calc_forward_point_profits(df, entry_idx, entry_price, "long")
-
-                    trades.append({
-                        "trade_no": len(trades) + 1,
-                        "square_date": df.loc[sq_idx, DATE_COL],
-                        "signal_date": df.loc[signal_idx, DATE_COL],
-                        "entry_date": df.loc[entry_idx, DATE_COL],
-                        "exit_date": df.loc[exit_idx, DATE_COL],
-                        "position": "long",
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "initial_stop_price": float(initial_stop),
-                        "final_stop_price": float(initial_stop),
-                        "R": float(R),
-                        "pnl": float(pnl),
-                        "square_type": sq_type,
-                    })
-
-                    i = exit_idx
-                    continue
-
-    # ===== Build DF =====
-    trades_df = pd.DataFrame(trades)
-
-    # ===== Equity =====
-    df["equity"] = np.nan
-    equity = 1.0
-    for t in trades:
-        equity += equity * RISK_PER_TRADE * t["R"]
-        df.loc[df[DATE_COL] >= t["exit_date"], "equity"] = equity
-
-    return trades_df, df
-# ==========================
-# METRICS + COMMENTARY
-# ==========================
-
-def compute_metrics(trades_df, price_df):
-    if trades_df.empty:
-        return {
-            "n_trades": 0,
-            "win_rate": 0,
-            "avg_R": 0,
-            "cagr": 0,
-            "max_dd": 0,
-            "start_date": None,
-            "end_date": None,
-            "years": 0,
-        }
-
-    n = len(trades_df)
-    wins = (trades_df["R"] > 0).sum()
-    win_rate = 100 * wins / n
-    avg_R = trades_df["R"].mean()
-
-    eq = price_df["equity"].dropna()
-    start_eq = eq.iloc[0]
-    end_eq = eq.iloc[-1]
-
-    start_date = price_df[DATE_COL].iloc[0]
-    end_date = price_df[DATE_COL].iloc[-1]
-    years = (end_date - start_date).days / 365.25
-
-    if years > 0 and start_eq > 0:
-        cagr = (end_eq / start_eq) ** (1 / years) - 1
-    else:
-        cagr = 0
-
-    equity = eq.values
-    peaks = np.maximum.accumulate(equity)
-    dd = (equity - peaks) / peaks
-    max_dd = float(dd.min()) if len(dd) else 0
-
-    return {
-        "n_trades": n,
-        "win_rate": win_rate,
-        "avg_R": avg_R,
-        "cagr": cagr,
-        "max_dd": max_dd,
-        "start_date": start_date,
-        "end_date": end_date,
-        "years": years,
-    }
-# ==========================
-# HTML RENDERING
-# ==========================
-
-def render_stock_html(symbol, metrics, trades_df, commentary=""):
-    start = metrics["start_date"].strftime("%d-%m-%Y") if metrics["start_date"] else "N/A"
-    end = metrics["end_date"].strftime("%d-%m-%Y") if metrics["end_date"] else "N/A"
-    yrs = f"{metrics['years']:.1f}" if metrics["years"] else "N/A"
+    rows = ""
+    for _, r in squares_df.iterrows():
+        rows += f"""
+<tr>
+<td>{r['square_date'].strftime('%Y-%m-%d')}</td>
+<td>{r['square_price']}</td>
+<td>{r['direction']}</td>
+<td>{r['square_type']}</td>
+</tr>
+"""
 
     html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>{symbol} – Gann T+1 Close System</title>
+<title>{symbol} – Gann Square Formations</title>
 <style>
 body {{
   font-family: Arial, sans-serif;
@@ -270,23 +148,18 @@ body {{
   padding: 20px;
   background: #fafafa;
 }}
-.card {{
-  background: white;
-  padding: 16px;
-  border-radius: 10px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}}
+
 table {{
   width: 100%;
   border-collapse: collapse;
-  margin-top: 10px;
-  font-size: 13px;
+  margin-top: 20px;
 }}
+
 th, td {{
-  padding: 6px 8px;
-  border-bottom: 1px solid #ddd;
+  padding: 8px;
+  border-bottom: 1px solid #ccc;
 }}
+
 th {{
   background: #eee;
 }}
@@ -294,102 +167,53 @@ th {{
 </head>
 <body>
 
-<h1>{symbol} – Gann T+1 Close System</h1>
+<h1>{symbol} – Gann Square Formations</h1>
 
-<div class="card">
-<h2>Summary</h2>
-<p><b>Total Trades:</b> {metrics["n_trades"]}<br>
-<b>Win Rate:</b> {metrics["win_rate"]:.1f}%<br>
-<b>Avg R:</b> {metrics["avg_R"]:.2f}<br>
-<b>CAGR:</b> {metrics["cagr"]*100:.1f}%<br>
-<b>Max DD:</b> {metrics["max_dd"]*100:.1f}%<br>
-<b>Period:</b> {start} to {end} ({yrs} yrs)</p>
-</div>
-
-<div class="card">
-<h2>Trades</h2>
 <table>
 <tr>
-<th>#</th>
-<th>Square</th>
-<th>Signal</th>
-<th>Entry (Close)</th>
-<th>Exit (T+1 Close)</th>
-<th>Side</th>
-<th>R</th>
-<th>SqType</th>
+<th>Square Date</th>
+<th>Square Price</th>
+<th>Direction</th>
+<th>Square Type</th>
 </tr>
-"""
-
-    for _, tr in trades_df.iterrows():
-
-        html += f"""
-<tr>
-<td>{int(tr['trade_no'])}</td>
-<td>{tr['square_date'].strftime('%Y-%m-%d')}</td>
-<td>{tr['signal_date'].strftime('%Y-%m-%d')}</td>
-<td>{tr['entry_date'].strftime('%Y-%m-%d')}</td>
-<td>{tr['exit_date'].strftime('%Y-%m-%d')}</td>
-<td>{tr['position']}</td>
-<td>{tr['R']:.2f}</td>
-<td>{tr['square_type']}</td>
-</tr>
-"""
-
-    html += """
+{rows}
 </table>
-</div>
 
 </body>
 </html>
 """
     return html
-def render_master_index(summaries):
-    rows = ""
-    for s in summaries:
-        rows += f"""
-<tr>
-<td><a href="{s['link']}">{s['symbol']}</a></td>
-<td>{s['n_trades']}</td>
-<td>{s['win_rate']:.1f}%</td>
-<td>{s['avg_R']:.2f}</td>
-<td>{s['cagr']*100:.1f}%</td>
-<td>{s['max_dd']*100:.1f}%</td>
-<td>{s['years']:.1f}</td>
-</tr>
-"""
 
-    return f"""
-<!DOCTYPE html>
+
+# ---------------- HTML MASTER INDEX ----------------
+
+def render_master_index(rows):
+
+    html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>NSE Gann T+1 System</title>
+<title>NSE – Gann Square Formations</title>
 <style>
 body {{
   font-family: Arial, sans-serif;
-  max-width: 1000px;
+  max-width: 900px;
   margin: auto;
   padding: 20px;
   background: #fafafa;
 }}
-.card {{
-  background: white;
-  padding: 16px;
-  border-radius: 10px;
-  margin-bottom: 20px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}}
+
 table {{
   width: 100%;
   border-collapse: collapse;
-  margin-top: 10px;
-  font-size: 14px;
+  margin-top: 20px;
 }}
+
 th, td {{
-  padding: 6px 8px;
-  border-bottom: 1px solid #ddd;
+  padding: 8px;
+  border-bottom: 1px solid #ccc;
 }}
+
 th {{
   background: #eee;
 }}
@@ -397,29 +221,26 @@ th {{
 </head>
 <body>
 
-<h1>NSE Stocks – Gann T+1 Close Backtests</h1>
+<h1>NSE Stocks – Gann Square Formations</h1>
 
-<div class="card">
 <table>
 <tr>
 <th>Symbol</th>
-<th># Trades</th>
-<th>Win%</th>
-<th>Avg R</th>
-<th>CAGR</th>
-<th>Max DD</th>
-<th>Years</th>
+<th># Squares</th>
+<th>Link</th>
 </tr>
+
 {rows}
+
 </table>
-</div>
 
 </body>
 </html>
 """
-# ==========================
-# MAIN
-# ==========================
+    return html
+
+
+# ---------------- MAIN ----------------
 
 def main():
     summaries = []
@@ -445,43 +266,38 @@ def main():
         df = compute_atr(df)
         df = detect_swings(df, low_col=LOW_COL, high_col=HIGH_COL)
 
-        trades_df, price_df = backtest_symbol(df)
+        squares_df = extract_squares(df)
 
-        # save CSV
-        out_csv = os.path.join(TRADES_CSV_DIR, f"{symbol}_trades.csv")
-        trades_df.to_csv(out_csv, index=False)
+        # Save CSV
+        out_csv = os.path.join(OUT_DIR, f"{symbol}_squares.csv")
+        squares_df.to_csv(out_csv, index=False)
 
-        # metrics
-        metrics = compute_metrics(trades_df, price_df)
+        # Save HTML
+        stock_dir = os.path.join("docs", "stocks", symbol)
+        os.makedirs(stock_dir, exist_ok=True)
 
-        # HTML page
-        sym_dir = os.path.join("docs", "stocks", symbol)
-        os.makedirs(sym_dir, exist_ok=True)
-
-        out_html = os.path.join(sym_dir, "index.html")
-        html = render_stock_html(symbol, metrics, trades_df)
+        out_html = os.path.join(stock_dir, "index.html")
         with open(out_html, "w", encoding="utf-8") as f:
-            f.write(html)
+            f.write(render_stock_html(symbol, squares_df))
 
         summaries.append({
             "symbol": symbol,
-            "n_trades": metrics["n_trades"],
-            "win_rate": metrics["win_rate"],
-            "avg_R": metrics["avg_R"],
-            "cagr": metrics["cagr"],
-            "max_dd": metrics["max_dd"],
-            "years": metrics["years"],
-            "link": f"stocks/{symbol}/index.html",
+            "count": len(squares_df),
+            "link": f"stocks/{symbol}/index.html"
         })
 
-    # master index
-    master = render_master_index(summaries)
-    with open(MASTER_INDEX_HTML, "w", encoding="utf-8") as f:
-        f.write(master)
+    # Build master index
+    rows = "\n".join(
+        f"<tr><td>{s['symbol']}</td><td>{s['count']}</td><td><a href='{s['link']}'>View</a></td></tr>"
+        for s in summaries
+    )
 
-    print("Site built successfully.")
+    master_html = render_master_index(rows)
+    with open(MASTER_INDEX_HTML, "w", encoding="utf-8") as f:
+        f.write(master_html)
+
+    print("Done. All square formations extracted.")
 
 
 if __name__ == "__main__":
     main()
-
