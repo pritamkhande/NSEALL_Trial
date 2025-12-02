@@ -10,7 +10,7 @@ from utils_gann import find_square_from_swing_low, find_square_from_swing_high
 # CONFIG
 # ==========================
 
-EOD_DIR = "EOD"                 # NEW: folder with subfolders A, B, ..., 0-9
+EOD_DIR = "EOD"                 # folder with subfolders A, B, ..., 0-9
 EARLY_DIR = "Early_Data"        # optional
 
 DATE_COL = "Date"
@@ -141,7 +141,8 @@ def backtest_symbol(df):
     i = 0
 
     # ================= ORIGINAL SIGNAL + EXIT ENGINE =================
-    # This block is exactly your old logic (entry at next-day open, ATR trail exits).
+    # This block is your old logic
+    # (entry at next-day OPEN, ATR trailing exits).
     while i < n - 2:
         if not in_trade:
 
@@ -151,17 +152,18 @@ def backtest_symbol(df):
                     df, i, DATE_COL, CLOSE_COL, slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
                 )
                 if sq_idx is not None and sq_idx < n - 1:
+                    # breakout: next-day close below square low
                     if df.loc[sq_idx + 1, CLOSE_COL] < df.loc[sq_idx, LOW_COL]:
                         in_trade = True
                         position = "short"
-                        entry_idx = sq_idx + 1
+                        entry_idx = sq_idx + 1              # breakout day
                         entry_price = df.loc[entry_idx, OPEN_COL]
                         entry_square_type = sq_type
 
                         sl = df.loc[sq_idx, HIGH_COL] + 2 * df.loc[sq_idx, "ATR"]
                         stop_price = sl
                         initial_stop_price = sl
-                        signal_idx = sq_idx
+                        signal_idx = sq_idx                  # square bar index
                         signal_date = df.loc[sq_idx, DATE_COL]
                         i = entry_idx
                         continue
@@ -172,10 +174,11 @@ def backtest_symbol(df):
                     df, i, DATE_COL, CLOSE_COL, slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
                 )
                 if sq_idx is not None and sq_idx < n - 1:
+                    # breakout: next-day close above square high
                     if df.loc[sq_idx + 1, CLOSE_COL] > df.loc[sq_idx, HIGH_COL]:
                         in_trade = True
                         position = "long"
-                        entry_idx = sq_idx + 1
+                        entry_idx = sq_idx + 1              # breakout day
                         entry_price = df.loc[entry_idx, OPEN_COL]
                         entry_square_type = sq_type
 
@@ -222,6 +225,7 @@ def backtest_symbol(df):
                 exit_reason = "End"
 
             if exit_reason:
+                # ORIGINAL R and pnl (will be recomputed later)
                 if position == "long":
                     risk = entry_price - initial_stop_price
                     pnl = exit_price - entry_price
@@ -236,10 +240,10 @@ def backtest_symbol(df):
 
                 trades.append({
                     "trade_no": len(trades) + 1,
-                    "signal_index": signal_idx,
-                    "signal_date": signal_date,
-                    "entry_index": entry_idx,
-                    "exit_index": i,
+                    "signal_index": signal_idx,        # square bar index
+                    "signal_date": signal_date,        # square bar date
+                    "entry_index": entry_idx,          # breakout bar index
+                    "exit_index": i,                   # original exit index
                     "entry_date": df.loc[entry_idx, DATE_COL],
                     "exit_date": date_i,
                     "position": position,
@@ -274,22 +278,30 @@ def backtest_symbol(df):
 
             i += 1
 
-    # ================= RE-MAP ENTRY/EXIT TO T+1 CLOSE =================
-    # Now we have EXACTLY the same trades as original engine (same count,
-    # same signals). We only change how entry/exit price & index are
-    # defined:
-    #   entry  = signal-bar close
-    #   exit   = next-bar close
-    # R, pnl, forward P&L, equity are recomputed from this.
+    # ================= RE-MAP TO: ENTRY = BREAKOUT CLOSE, EXIT = NEXT CLOSE =================
+    #
+    # Now we keep EXACTLY the same trades (same signals, same count).
+    # Only change:
+    #   entry_index_new = original entry_index  (breakout day)
+    #   exit_index_new  = entry_index_new + 1   (next day)
+    #   entry_price_new = Close[entry_index_new]
+    #   exit_price_new  = Close[exit_index_new]
+    #
+    # This matches: "enter at closing price on signal/breakout day, exit next day close".
 
     for t in trades:
-        sig_idx = t["signal_index"]
         pos = t["position"]
 
-        entry_idx_new = sig_idx
-        exit_idx_new = sig_idx + 1  # next day close
+        entry_idx_orig = t["entry_index"]     # this is breakout bar index
+        entry_idx_new = entry_idx_orig
+        exit_idx_new = entry_idx_new + 1      # next day close
 
-        # indices and dates
+        # guard
+        if exit_idx_new >= len(df):
+            # cannot define T+1 exit for the last bar, keep original exit
+            continue
+
+        # indices & dates
         t["entry_index"] = entry_idx_new
         t["exit_index"] = exit_idx_new
         t["entry_date"] = df.loc[entry_idx_new, DATE_COL]
@@ -316,7 +328,8 @@ def backtest_symbol(df):
         t["final_stop_price"] = initial_stop
         t["exit_reason"] = "T+1_close"
 
-        # recompute T(-1) and forward PnL
+        # recompute T(-1) and forward P&L from this new entry
+        sig_idx = t["signal_index"]
         t["pts_Tm1"] = calc_tminus1_profit(df, sig_idx, pos)
         pts = calc_forward_point_profits(df, entry_idx_new, entry_price_new, pos, max_horizon=4)
         t["pts_T"] = pts[0]
@@ -330,7 +343,7 @@ def backtest_symbol(df):
     # ================= RECOMPUTE EQUITY WITH NEW R =================
     df["equity"] = np.nan
     equity = 1.0
-    it = iter(trades)   # list 'trades' already updated
+    it = iter(trades)
     ct = next(it, None)
 
     for idx in range(n):
@@ -514,9 +527,9 @@ th {{
 <table>
 <tr>
 <th>#</th>
-<th>Signal</th>
-<th>Entry</th>
-<th>Exit</th>
+<th>Signal (square date)</th>
+<th>Entry (breakout close)</th>
+<th>Exit (next-day close)</th>
 <th>Side</th>
 <th>R</th>
 <th>Sq-Type</th>
@@ -670,7 +683,8 @@ def main():
 
         early_df = load_early_close_for_symbol(symbol)
         if early_df is not None and not trades_df.empty:
-            pass  # you said NO early-close logic now
+            # currently no early-close adjustment
+            pass
 
         out_csv = os.path.join(TRADES_CSV_DIR, f"{symbol}_trades.csv")
         trades_df.to_csv(out_csv, index=False)
