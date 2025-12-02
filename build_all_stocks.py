@@ -121,9 +121,8 @@ def calc_tminus1_profit(
     position: str,
 ) -> float:
     """
-    Profit from signal-day close to next-day close (T-1 definition used earlier).
-    Here we still define T-1 as: close(signal_idx+1) - close(signal_idx)
-    for long (reversed sign for short). This keeps the older metric meaning.
+    Profit from signal-day close to next-day close.
+    T-1 metric kept same meaning as earlier code.
     """
     if signal_idx is None:
         return np.nan
@@ -140,179 +139,157 @@ def calc_tminus1_profit(
 
 
 # ==========================
-# BACKTEST – NEW ENTRY/EXIT LOGIC
+# BACKTEST – SAME SIGNALS, NEW ENTRY/EXIT
 # ==========================
 #
-# IMPORTANT:
-# - Signals (swing + square + breakout condition) are IDENTICAL to earlier.
-# - signal_idx and signal_date are the SAME as earlier (square bar index).
-# - CHANGE: trade entry is at signal-day CLOSE, and exit is next-day CLOSE.
+# Signals (swing + square + breakout) and square index are identical
+# to the original ATR-trailing system. Only trade execution changes:
+#   - entry at signal-day close
+#   - exit at next-day close
+# Skip-forward logic is preserved so trade count stays identical.
 
 
 def backtest_symbol(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     n = len(df)
     trades = []
 
-    # Iterate through all bars that could host a swing
-    for i in range(n - 2):  # need room for square + next-day breakout + exit day
-        # SHORT setup from swing low
+    i = 0
+    while i < n - 2:
+
+        # SHORT from swing low
         if df.loc[i, "swing_low"]:
             sq_idx, sq_type = find_square_from_swing_low(
-                df,
-                swing_idx=i,
-                date_col=DATE_COL,
-                close_col=CLOSE_COL,
-                slope_tol=SLOPE_TOL,
-                max_lookahead=MAX_LOOKAHEAD,
+                df, i, DATE_COL, CLOSE_COL, slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
             )
             if sq_idx is not None and sq_idx < n - 1:
-                # Breakout condition SAME AS EARLIER:
-                # next day close must be below square bar low
+                # breakout condition unchanged: next close below square low
                 if df.loc[sq_idx + 1, CLOSE_COL] < df.loc[sq_idx, LOW_COL]:
                     signal_idx = sq_idx
-                    signal_date = df.loc[signal_idx, DATE_COL]
-
-                    # NEW RULE:
-                    # Entry at signal-day close, exit at next-day close
-                    entry_idx = signal_idx
-                    exit_idx = signal_idx + 1
+                    entry_idx = signal_idx      # entry at signal close
+                    exit_idx = signal_idx + 1   # exit at next-day close
                     if exit_idx >= n:
-                        continue  # safety
+                        break
 
                     position = "short"
                     entry_price = df.loc[entry_idx, CLOSE_COL]
                     exit_price = df.loc[exit_idx, CLOSE_COL]
 
-                    # Use same theoretical stop as old system for R calc
                     initial_stop_price = df.loc[sq_idx, HIGH_COL] + 2 * df.loc[sq_idx, "ATR"]
-                    stop_price = initial_stop_price
 
-                    # R-multiple
                     risk = initial_stop_price - entry_price
                     pnl = entry_price - exit_price
                     r_mult = pnl / risk if risk != 0 else 0.0
 
                     pts_Tm1 = calc_tminus1_profit(df, signal_idx, position)
-                    pts_T, pts_T1, pts_T2, pts_T3, pts_T4 = calc_forward_point_profits(
-                        df, entry_idx, entry_price, position, max_horizon=4
-                    )
+                    pts = calc_forward_point_profits(df, entry_idx, entry_price, position)
 
-                    trades.append(
-                        {
-                            "trade_no": len(trades) + 1,
-                            "signal_index": signal_idx,
-                            "signal_date": signal_date,
-                            "entry_index": entry_idx,
-                            "exit_index": exit_idx,
-                            "entry_date": df.loc[entry_idx, DATE_COL],
-                            "exit_date": df.loc[exit_idx, DATE_COL],
-                            "position": position,
-                            "entry_price": float(entry_price),
-                            "exit_price": float(exit_price),
-                            "initial_stop_price": float(initial_stop_price),
-                            "final_stop_price": float(stop_price),
-                            "R": float(r_mult),
-                            "pnl": float(pnl),
-                            "exit_reason": "T+1_close",
-                            "square_type": sq_type,
-                            "pts_Tm1": pts_Tm1,
-                            "pts_T": pts_T,
-                            "pts_T1": pts_T1,
-                            "pts_T2": pts_T2,
-                            "pts_T3": pts_T3,
-                            "pts_T4": pts_T4,
-                        }
-                    )
+                    trades.append({
+                        "trade_no": len(trades) + 1,
+                        "signal_index": signal_idx,
+                        "signal_date": df.loc[signal_idx, DATE_COL],
+                        "entry_index": entry_idx,
+                        "exit_index": exit_idx,
+                        "entry_date": df.loc[entry_idx, DATE_COL],
+                        "exit_date": df.loc[exit_idx, DATE_COL],
+                        "position": position,
+                        "entry_price": float(entry_price),
+                        "exit_price": float(exit_price),
+                        "initial_stop_price": float(initial_stop_price),
+                        "final_stop_price": float(initial_stop_price),
+                        "R": float(r_mult),
+                        "pnl": float(pnl),
+                        "exit_reason": "T+1_close",
+                        "square_type": sq_type,
+                        "pts_Tm1": pts_Tm1,
+                        "pts_T": pts[0],
+                        "pts_T1": pts[1],
+                        "pts_T2": pts[2],
+                        "pts_T3": pts[3],
+                        "pts_T4": pts[4],
+                    })
 
-        # LONG setup from swing high
+                    # skip forward past this trade, same as old logic
+                    i = exit_idx
+                    continue
+
+        # LONG from swing high
         if df.loc[i, "swing_high"]:
             sq_idx, sq_type = find_square_from_swing_high(
-                df,
-                swing_idx=i,
-                date_col=DATE_COL,
-                close_col=CLOSE_COL,
-                slope_tol=SLOPE_TOL,
-                max_lookahead=MAX_LOOKAHEAD,
+                df, i, DATE_COL, CLOSE_COL, slope_tol=SLOPE_TOL, max_lookahead=MAX_LOOKAHEAD
             )
             if sq_idx is not None and sq_idx < n - 1:
-                # Breakout condition SAME AS EARLIER:
-                # next day close must be above square bar high
+                # breakout condition unchanged: next close above square high
                 if df.loc[sq_idx + 1, CLOSE_COL] > df.loc[sq_idx, HIGH_COL]:
                     signal_idx = sq_idx
-                    signal_date = df.loc[signal_idx, DATE_COL]
-
-                    # NEW RULE:
-                    # Entry at signal-day close, exit at next-day close
                     entry_idx = signal_idx
                     exit_idx = signal_idx + 1
                     if exit_idx >= n:
-                        continue  # safety
+                        break
 
                     position = "long"
                     entry_price = df.loc[entry_idx, CLOSE_COL]
                     exit_price = df.loc[exit_idx, CLOSE_COL]
 
-                    # Same theoretical stop as old system for R calc
                     initial_stop_price = df.loc[sq_idx, LOW_COL] - 2 * df.loc[sq_idx, "ATR"]
-                    stop_price = initial_stop_price
 
                     risk = entry_price - initial_stop_price
                     pnl = exit_price - entry_price
                     r_mult = pnl / risk if risk != 0 else 0.0
 
                     pts_Tm1 = calc_tminus1_profit(df, signal_idx, position)
-                    pts_T, pts_T1, pts_T2, pts_T3, pts_T4 = calc_forward_point_profits(
-                        df, entry_idx, entry_price, position, max_horizon=4
-                    )
+                    pts = calc_forward_point_profits(df, entry_idx, entry_price, position)
 
-                    trades.append(
-                        {
-                            "trade_no": len(trades) + 1,
-                            "signal_index": signal_idx,
-                            "signal_date": signal_date,
-                            "entry_index": entry_idx,
-                            "exit_index": exit_idx,
-                            "entry_date": df.loc[entry_idx, DATE_COL],
-                            "exit_date": df.loc[exit_idx, DATE_COL],
-                            "position": position,
-                            "entry_price": float(entry_price),
-                            "exit_price": float(exit_price),
-                            "initial_stop_price": float(initial_stop_price),
-                            "final_stop_price": float(stop_price),
-                            "R": float(r_mult),
-                            "pnl": float(pnl),
-                            "exit_reason": "T+1_close",
-                            "square_type": sq_type,
-                            "pts_Tm1": pts_Tm1,
-                            "pts_T": pts_T,
-                            "pts_T1": pts_T1,
-                            "pts_T2": pts_T2,
-                            "pts_T3": pts_T3,
-                            "pts_T4": pts_T4,
-                        }
-                    )
+                    trades.append({
+                        "trade_no": len(trades) + 1,
+                        "signal_index": signal_idx,
+                        "signal_date": df.loc[signal_idx, DATE_COL],
+                        "entry_index": entry_idx,
+                        "exit_index": exit_idx,
+                        "entry_date": df.loc[entry_idx, DATE_COL],
+                        "exit_date": df.loc[exit_idx, DATE_COL],
+                        "position": position,
+                        "entry_price": float(entry_price),
+                        "exit_price": float(exit_price),
+                        "initial_stop_price": float(initial_stop_price),
+                        "final_stop_price": float(initial_stop_price),
+                        "R": float(r_mult),
+                        "pnl": float(pnl),
+                        "exit_reason": "T+1_close",
+                        "square_type": sq_type,
+                        "pts_Tm1": pts_Tm1,
+                        "pts_T": pts[0],
+                        "pts_T1": pts[1],
+                        "pts_T2": pts[2],
+                        "pts_T3": pts[3],
+                        "pts_T4": pts[4],
+                    })
+
+                    i = exit_idx
+                    continue
+
+        i += 1
 
     trades_df = pd.DataFrame(trades)
 
-    # Equity curve (realizing R at exit_date)
+    # Equity curve: realize R at exit_date in chronological order
     df["equity"] = np.nan
     equity = 1.0
+
     if not trades_df.empty:
         trades_sorted = trades_df.sort_values("exit_date").reset_index(drop=True)
         t_idx = 0
-        n_tr = len(trades_sorted)
+        total_tr = len(trades_sorted)
     else:
         trades_sorted = None
         t_idx = 0
-        n_tr = 0
+        total_tr = 0
 
     for idx in range(n):
         cur_date = df.loc[idx, DATE_COL]
-        # Realize all trades whose exit_date <= current date
-        while t_idx < n_tr and trades_sorted.loc[t_idx, "exit_date"] <= cur_date:
-            r_mult = trades_sorted.loc[t_idx, "R"]
-            risk_amount = equity * RISK_PER_TRADE
-            equity += r_mult * risk_amount
+        while t_idx < total_tr and trades_sorted.loc[t_idx, "exit_date"] <= cur_date:
+            rmult = trades_sorted.loc[t_idx, "R"]
+            risk_amt = equity * RISK_PER_TRADE
+            equity += rmult * risk_amt
             t_idx += 1
         df.loc[idx, "equity"] = equity
 
